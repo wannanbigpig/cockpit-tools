@@ -25,6 +25,8 @@ export interface GeminiAccount {
 
   status?: string | null;
   status_reason?: string | null;
+  quota_query_last_error?: string | null;
+  quota_query_last_error_at?: number | null;
 
   created_at: number;
   last_used: number;
@@ -46,6 +48,8 @@ export interface GeminiUsageBucket {
   label: string;
   remainingPercent: number;
   resetAt: number | null;
+  remainingAmount: number | null;
+  limit: number | null;
 }
 
 export interface GeminiQuotaDisplayItem {
@@ -53,6 +57,8 @@ export interface GeminiQuotaDisplayItem {
   label: string;
   remainingPercent: number;
   resetAt: number | null;
+  remainingAmount: number | null;
+  limit: number | null;
 }
 
 export interface GeminiUsage {
@@ -74,8 +80,8 @@ export interface GeminiUsage {
 }
 
 export interface GeminiTierQuotaSummary {
-  key: 'pro' | 'flash';
-  label: 'Pro' | 'Flash';
+  key: "pro" | "flash";
+  label: "Pro" | "Flash";
   remainingPercent: number | null;
   resetAt: number | null;
 }
@@ -83,17 +89,23 @@ export interface GeminiTierQuotaSummary {
 type JsonMap = Record<string, unknown>;
 
 function toObject(value: unknown): JsonMap | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as JsonMap;
 }
 
 function toNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
     const parsed = Number.parseFloat(value.trim());
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function toInteger(value: unknown): number | null {
+  const parsed = toNumber(value);
+  if (parsed == null || !Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.round(parsed));
 }
 
 function clampPercent(value: number): number {
@@ -102,12 +114,12 @@ function clampPercent(value: number): number {
 }
 
 function parseResetAt(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === "number" && Number.isFinite(value)) {
     if (value <= 0) return null;
     return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
   }
 
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
 
@@ -157,9 +169,9 @@ function parseGeminiQuotaDisplayItemsFromRaw(rawValue: unknown): GeminiQuotaDisp
   if (!raw) return [];
 
   const bucketsRaw = raw.buckets;
-  const bucketItems = Array.isArray(bucketsRaw)
+  const bucketItems: GeminiQuotaDisplayItem[] = Array.isArray(bucketsRaw)
     ? bucketsRaw
-        .map((item) => {
+        .map((item): GeminiQuotaDisplayItem | null => {
           const bucket = toObject(item);
           if (!bucket) return null;
 
@@ -183,7 +195,11 @@ function parseGeminiQuotaDisplayItemsFromRaw(rawValue: unknown): GeminiQuotaDisp
             label: formatGeminiModelLabel(modelId),
             remainingPercent,
             resetAt: parseResetAt(bucket.resetTime ?? bucket.reset_time),
-          } satisfies GeminiQuotaDisplayItem;
+            remainingAmount: toInteger(
+              bucket.remainingAmount ?? bucket.remaining_amount,
+            ),
+            limit: null,
+          };
         })
         .filter((item): item is GeminiQuotaDisplayItem => item !== null)
     : [];
@@ -254,6 +270,17 @@ function parseGeminiQuotaDisplayItemsFromRaw(rawValue: unknown): GeminiQuotaDisp
             ? clampPercent(remainingValue * 100)
             : clampPercent(remainingValue),
         resetAt: parseResetAt(model.reset_time ?? model.resetTime),
+        remainingAmount: toInteger(
+          model.remainingAmount ??
+            model.remaining_amount ??
+            model.requestsLeft ??
+            model.requests_left,
+        ),
+        limit: toInteger(
+          model.limit ??
+            model.requestsLimit ??
+            model.requests_limit,
+        ),
       } satisfies GeminiQuotaDisplayItem;
     })
     .filter((item): item is GeminiQuotaDisplayItem => item !== null)
@@ -268,23 +295,25 @@ export function getGeminiAccountDisplayEmail(account: GeminiAccount): string {
   return account.id;
 }
 
-function resolveGeminiPlanBucket(rawTier: string): 'free' | 'pro' | 'ultra' | 'unknown' {
+function resolveGeminiPlanBucket(
+  rawTier: string,
+): "free" | "pro" | "ultra" | "unknown" {
   const lower = rawTier.trim().toLowerCase();
-  if (!lower) return 'unknown';
-  if (lower.includes('ultra')) return 'ultra';
-  if (lower === 'standard-tier') return 'free';
-  if (lower.includes('pro') || lower.includes('premium')) return 'pro';
-  if (lower === 'free-tier' || lower.includes('free')) return 'free';
-  return 'unknown';
+  if (!lower) return "unknown";
+  if (lower.includes("ultra")) return "ultra";
+  if (lower === "standard-tier") return "free";
+  if (lower.includes("pro") || lower.includes("premium")) return "pro";
+  if (lower === "free-tier" || lower.includes("free")) return "free";
+  return "unknown";
 }
 
 export function getGeminiPlanBadge(account: GeminiAccount): string {
-  const raw = (account.plan_name || account.tier_id || '').trim();
+  const raw = (account.plan_name || account.tier_id || "").trim();
   const bucket = resolveGeminiPlanBucket(raw);
-  if (bucket === 'free') return 'FREE';
-  if (bucket === 'pro') return 'PRO';
-  if (bucket === 'ultra') return 'ULTRA';
-  return 'UNKNOWN';
+  if (bucket === "free") return "FREE";
+  if (bucket === "pro") return "PRO";
+  if (bucket === "ultra") return "ULTRA";
+  return "UNKNOWN";
 }
 
 export function getGeminiPlanDisplayName(account: GeminiAccount): string {
@@ -295,12 +324,12 @@ export function getGeminiPlanBadgeClass(
   planType?: string | null,
   account?: GeminiAccount,
 ): string {
-  const raw = (planType || account?.plan_name || account?.tier_id || '').trim();
+  const raw = (planType || account?.plan_name || account?.tier_id || "").trim();
   const bucket = resolveGeminiPlanBucket(raw);
-  if (bucket === 'ultra') return 'ultra';
-  if (bucket === 'pro') return 'pro';
-  if (bucket === 'free') return 'free';
-  return 'unknown';
+  if (bucket === "ultra") return "ultra";
+  if (bucket === "pro") return "pro";
+  if (bucket === "free") return "free";
+  return "unknown";
 }
 
 export function getGeminiQuotaDisplayItems(
@@ -311,7 +340,6 @@ export function getGeminiQuotaDisplayItems(
   if (fromUsageRaw.length > 0) {
     return typeof limit === 'number' ? fromUsageRaw.slice(0, limit) : fromUsageRaw;
   }
-
   const fromQuotaRaw = parseGeminiQuotaDisplayItemsFromRaw(account.quota?.raw_data);
   if (fromQuotaRaw.length > 0) {
     return typeof limit === 'number' ? fromQuotaRaw.slice(0, limit) : fromQuotaRaw;
@@ -324,6 +352,8 @@ export function getGeminiQuotaDisplayItems(
       label: '5小时',
       remainingPercent: clampPercent(account.quota.hourly_percentage),
       resetAt: parseResetAt(account.quota.hourly_reset_time),
+      remainingAmount: null,
+      limit: null,
     });
   }
   if (typeof account.quota?.weekly_percentage === 'number') {
@@ -332,6 +362,8 @@ export function getGeminiQuotaDisplayItems(
       label: '每周',
       remainingPercent: clampPercent(account.quota.weekly_percentage),
       resetAt: parseResetAt(account.quota.weekly_reset_time),
+      remainingAmount: null,
+      limit: null,
     });
   }
 
@@ -339,24 +371,111 @@ export function getGeminiQuotaDisplayItems(
 }
 
 export function getGeminiUsage(account: GeminiAccount): GeminiUsage {
-  const parsedBuckets: GeminiUsageBucket[] = getGeminiQuotaDisplayItems(account).map((item) => ({
-    modelId: item.key,
-    label: item.label,
-    remainingPercent: item.remainingPercent,
-    resetAt: item.resetAt,
-  }));
+  const raw = toObject(account.gemini_usage_raw);
+  const bucketsRaw = raw?.buckets;
+  const buckets = Array.isArray(bucketsRaw) ? bucketsRaw : [];
+
+  const parsedBuckets: GeminiUsageBucket[] = [];
+  const bucketIndexByModelId = new Map<string, number>();
+
+  buckets.forEach((item) => {
+    const bucket = toObject(item);
+    if (!bucket) return;
+
+    const modelId =
+      typeof bucket.modelId === "string" ? bucket.modelId.trim() : "";
+    const remainingFraction =
+      toNumber(bucket.remainingFraction) ??
+      toNumber(bucket.remaining_percentage) ??
+      toNumber(bucket.remainingPercent) ??
+      toNumber(bucket.remaining_fraction);
+    if (!modelId || remainingFraction == null) return;
+
+    const normalizedRemainingPercent =
+      remainingFraction <= 1
+        ? clampPercent(remainingFraction * 100)
+        : clampPercent(remainingFraction);
+    const remainingAmount = toInteger(
+      bucket.remainingAmount ?? bucket.remaining_amount,
+    );
+    const computedFraction =
+      remainingFraction <= 1 ? remainingFraction : remainingFraction / 100;
+    const computedLimit =
+      remainingAmount != null && computedFraction > 0
+        ? Math.max(
+            remainingAmount,
+            Math.round(remainingAmount / computedFraction),
+          )
+        : null;
+
+    const nextBucket: GeminiUsageBucket = {
+      modelId,
+      label: formatGeminiModelLabel(modelId),
+      remainingPercent: normalizedRemainingPercent,
+      resetAt: parseResetAt(bucket.resetTime ?? bucket.reset_time),
+      remainingAmount,
+      limit: computedLimit,
+    };
+
+    const existingIndex = bucketIndexByModelId.get(modelId);
+    if (existingIndex == null) {
+      bucketIndexByModelId.set(modelId, parsedBuckets.length);
+      parsedBuckets.push(nextBucket);
+      return;
+    }
+
+    const current = parsedBuckets[existingIndex];
+    if (nextBucket.remainingPercent < current.remainingPercent) {
+      parsedBuckets[existingIndex] = nextBucket;
+      return;
+    }
+
+    if (
+      nextBucket.remainingPercent === current.remainingPercent &&
+      current.resetAt != null &&
+      (nextBucket.resetAt == null || nextBucket.resetAt > current.resetAt)
+    ) {
+      return;
+    }
+
+    if (
+      nextBucket.remainingPercent === current.remainingPercent &&
+      (current.resetAt == null ||
+        (nextBucket.resetAt != null && nextBucket.resetAt < current.resetAt))
+    ) {
+      parsedBuckets[existingIndex] = nextBucket;
+    }
+  });
+
+  if (parsedBuckets.length === 0) {
+    const fallbackBuckets = getGeminiQuotaDisplayItems(account).map((item) => ({
+      modelId: item.key,
+      label: item.label,
+      remainingPercent: item.remainingPercent,
+      resetAt: item.resetAt,
+      remainingAmount: item.remainingAmount,
+      limit: item.limit,
+    }));
+    parsedBuckets.push(...fallbackBuckets);
+  }
 
   const lowestRemaining = parsedBuckets.length
-    ? parsedBuckets.reduce((min, item) => Math.min(min, item.remainingPercent), 100)
+    ? parsedBuckets.reduce(
+        (min, item) => Math.min(min, item.remainingPercent),
+        100,
+      )
     : null;
 
   return {
-    inlineSuggestionsUsedPercent: lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
-    chatMessagesUsedPercent: lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
+    inlineSuggestionsUsedPercent:
+      lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
+    chatMessagesUsedPercent:
+      lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
     allowanceResetAt: null,
     planUsedCents: null,
     planLimitCents: null,
-    totalPercentUsed: lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
+    totalPercentUsed:
+      lowestRemaining == null ? null : clampPercent(100 - lowestRemaining),
     autoPercentUsed: null,
     apiPercentUsed: null,
     onDemandUsedCents: null,
@@ -373,7 +492,9 @@ function pickLowestRemainingBucket(
   buckets: GeminiUsageBucket[],
   matcher: (modelId: string) => boolean,
 ): GeminiUsageBucket | null {
-  const matched = buckets.filter((bucket) => matcher(bucket.modelId.toLowerCase()));
+  const matched = buckets.filter((bucket) =>
+    matcher(bucket.modelId.toLowerCase()),
+  );
   if (matched.length === 0) return null;
 
   return matched.reduce((prev, curr) => {
@@ -396,51 +517,57 @@ export function getGeminiTierQuotaSummary(account: GeminiAccount): {
 } {
   const usage = getGeminiUsage(account);
   const proBucket = pickLowestRemainingBucket(usage.buckets, (modelId) =>
-    modelId.includes('pro'),
+    modelId.includes("pro"),
   );
   const flashBucket = pickLowestRemainingBucket(usage.buckets, (modelId) =>
-    modelId.includes('flash'),
+    modelId.includes("flash"),
   );
 
   return {
     pro: {
-      key: 'pro',
-      label: 'Pro',
+      key: "pro",
+      label: "Pro",
       remainingPercent: proBucket?.remainingPercent ?? null,
       resetAt: proBucket?.resetAt ?? null,
     },
     flash: {
-      key: 'flash',
-      label: 'Flash',
+      key: "flash",
+      label: "Flash",
       remainingPercent: flashBucket?.remainingPercent ?? null,
       resetAt: flashBucket?.resetAt ?? null,
     },
   };
 }
 
-export function formatGeminiUsageDollars(cents: number | null | undefined): string {
-  if (typeof cents !== 'number' || !Number.isFinite(cents)) {
-    return '$0.00';
+export function formatGeminiUsageDollars(
+  cents: number | null | undefined,
+): string {
+  if (typeof cents !== "number" || !Number.isFinite(cents)) {
+    return "$0.00";
   }
   return `$${Math.max(cents, 0).toFixed(2)}`;
 }
 
 export function isGeminiAccountBanned(account: GeminiAccount): boolean {
-  const status = (account.status || '').toLowerCase();
-  const reason = (account.status_reason || '').toLowerCase();
+  const status = (account.status || "").toLowerCase();
+  const reason = (account.status_reason || "").toLowerCase();
   const is403Reason =
-    reason.includes('status=403') ||
-    reason.includes('403 forbidden') ||
+    reason.includes("status=403") ||
+    reason.includes("403 forbidden") ||
     reason.includes('"code":403') ||
     reason.includes('"code": 403') ||
-    reason.includes('permission_denied') ||
-    reason.includes('caller does not have permission');
+    reason.includes("permission_denied") ||
+    reason.includes("caller does not have permission");
   return (
-    status.includes('ban') ||
-    status.includes('forbidden') ||
-    reason.includes('ban') ||
-    reason.includes('forbidden') ||
-    reason.includes('suspend') ||
+    status.includes("ban") ||
+    status.includes("forbidden") ||
+    reason.includes("ban") ||
+    reason.includes("forbidden") ||
+    reason.includes("suspend") ||
     is403Reason
   );
+}
+
+export function hasGeminiQuotaData(account: GeminiAccount): boolean {
+  return account.gemini_usage_raw != null;
 }
