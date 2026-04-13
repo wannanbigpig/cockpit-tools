@@ -59,6 +59,7 @@ import {
 } from "../components/GeminiOverviewTabsHeader";
 import { GeminiInstancesContent } from "./GeminiInstancesPage";
 import { useLaunchTerminalOptions } from "../hooks/useLaunchTerminalOptions";
+import { buildGeminiAccountPresentation } from "../presentation/platformAccountPresentation";
 
 const CURSOR_FLOW_NOTICE_COLLAPSED_KEY = "agtools.gemini.flow_notice_collapsed";
 const CURSOR_CURRENT_ACCOUNT_ID_KEY = "agtools.gemini.current_account_id";
@@ -684,6 +685,7 @@ export function GeminiAccountsPage() {
 
   const renderGridCards = (items: typeof filteredAccounts, groupKey?: string) =>
     items.map((account) => {
+      const presentation = buildGeminiAccountPresentation(account, t);
       const displayEmail = resolveDisplayEmail(account);
       const emailText = displayEmail || account.id;
       const authMethodText = resolveAuthMethodText(account);
@@ -750,6 +752,31 @@ export function GeminiAccountsPage() {
           </div>
           <div className="account-sub-line">
             <span className="kiro-table-subline">Tier: {tierText}</span>
+          </div>
+
+          <div className="ghcp-quota-section">
+            {presentation.quotaItems.map((item) => (
+              <div className="quota-item" key={`${account.id}-${item.key}`}>
+                <div className="quota-header">
+                  <span className="quota-label">{item.label}</span>
+                  <span className={`quota-pct ${item.quotaClass}`}>{item.valueText}</span>
+                </div>
+                <div className="quota-bar-track">
+                  <div
+                    className={`quota-bar ${item.quotaClass}`}
+                    style={{ width: `${item.percentage}%` }}
+                  />
+                </div>
+                {item.resetText && (
+                  <span className="quota-reset">{item.resetText}</span>
+                )}
+              </div>
+            ))}
+            {presentation.quotaItems.length === 0 && (
+              <div className="quota-empty">
+                {t("common.shared.quota.noData", "暂无配额数据")}
+              </div>
+            )}
           </div>
 
           {accountTags.length > 0 && (
@@ -828,6 +855,7 @@ export function GeminiAccountsPage() {
 
   const renderTableRows = (items: typeof filteredAccounts, groupKey?: string) =>
     items.map((account) => {
+      const presentation = buildGeminiAccountPresentation(account, t);
       const displayEmail = resolveDisplayEmail(account);
       const emailText = displayEmail || account.id;
       const authMethodText = resolveAuthMethodText(account);
@@ -901,6 +929,32 @@ export function GeminiAccountsPage() {
               </div>
               <div className="account-sub-line">
                 <span className="kiro-table-subline">Tier: {tierText}</span>
+              </div>
+              <div className="ghcp-quota-section">
+                {presentation.quotaItems.map((item) => (
+                  <div className="quota-item" key={`${account.id}-table-${item.key}`}>
+                    <div className="quota-header">
+                      <span className="quota-name">{item.label}</span>
+                      <span className={`quota-value ${item.quotaClass}`}>{item.valueText}</span>
+                    </div>
+                    <div className="quota-progress-track">
+                      <div
+                        className={`quota-progress-bar ${item.quotaClass}`}
+                        style={{ width: `${item.percentage}%` }}
+                      />
+                    </div>
+                    {item.resetText && (
+                      <div className="quota-footer">
+                        <span className="quota-reset">{item.resetText}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {presentation.quotaItems.length === 0 && (
+                  <div className="quota-empty">
+                    {t("common.shared.quota.noData", "暂无配额数据")}
+                  </div>
+                )}
               </div>
               {accountTags.length > 0 && (
                 <div className="account-tags-inline">

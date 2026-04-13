@@ -43,6 +43,14 @@ export interface GeminiQuota {
 
 export interface GeminiUsageBucket {
   modelId: string;
+  label: string;
+  remainingPercent: number;
+  resetAt: number | null;
+}
+
+export interface GeminiQuotaDisplayItem {
+  key: string;
+  label: string;
   remainingPercent: number;
   resetAt: number | null;
 }
@@ -113,6 +121,145 @@ function parseResetAt(value: unknown): number | null {
   return Math.floor(parsed / 1000);
 }
 
+function formatGeminiModelLabel(value: string): string {
+  const raw = value.trim();
+  if (!raw) return 'Gemini';
+
+  const stripped = raw.replace(/^gemini-/i, '');
+  const parts = stripped.split('-').filter(Boolean);
+  if (parts.length === 0) return raw;
+
+  const tokens = parts.map((part) => {
+    if (/^\d+(\.\d+)?$/.test(part)) return part;
+    if (/^\d{2,4}$/.test(part)) return part;
+
+    switch (part.toLowerCase()) {
+      case 'flash':
+        return 'Flash';
+      case 'lite':
+        return 'Lite';
+      case 'pro':
+        return 'Pro';
+      case 'preview':
+        return 'Preview';
+      case 'exp':
+        return 'Exp';
+      default:
+        return part.charAt(0).toUpperCase() + part.slice(1);
+    }
+  });
+
+  return `Gemini ${tokens.join(' ')}`;
+}
+
+function parseGeminiQuotaDisplayItemsFromRaw(rawValue: unknown): GeminiQuotaDisplayItem[] {
+  const raw = toObject(rawValue);
+  if (!raw) return [];
+
+  const bucketsRaw = raw.buckets;
+  const bucketItems = Array.isArray(bucketsRaw)
+    ? bucketsRaw
+        .map((item) => {
+          const bucket = toObject(item);
+          if (!bucket) return null;
+
+          const modelId =
+            typeof bucket.modelId === 'string' ? bucket.modelId.trim() : '';
+          const remainingValue =
+            toNumber(bucket.remainingFraction) ??
+            toNumber(bucket.remaining_percentage) ??
+            toNumber(bucket.remainingPercent) ??
+            toNumber(bucket.remaining_fraction);
+
+          if (!modelId || remainingValue == null) return null;
+
+          const remainingPercent =
+            remainingValue <= 1
+              ? clampPercent(remainingValue * 100)
+              : clampPercent(remainingValue);
+
+          return {
+            key: modelId,
+            label: formatGeminiModelLabel(modelId),
+            remainingPercent,
+            resetAt: parseResetAt(bucket.resetTime ?? bucket.reset_time),
+          } satisfies GeminiQuotaDisplayItem;
+        })
+        .filter((item): item is GeminiQuotaDisplayItem => item !== null)
+    : [];
+
+  if (bucketItems.length > 0) {
+    const merged = new Map<string, GeminiQuotaDisplayItem>();
+    for (const item of bucketItems) {
+      const prev = merged.get(item.key);
+      if (!prev) {
+        merged.set(item.key, item);
+        continue;
+      }
+
+      if (item.remainingPercent < prev.remainingPercent) {
+        merged.set(item.key, item);
+        continue;
+      }
+
+      if (
+        item.remainingPercent === prev.remainingPercent &&
+        item.resetAt != null &&
+        (prev.resetAt == null || item.resetAt < prev.resetAt)
+      ) {
+        merged.set(item.key, item);
+      }
+    }
+
+    return Array.from(merged.values()).sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  const modelsRaw = raw.models;
+  const modelEntries = Array.isArray(modelsRaw)
+    ? modelsRaw
+    : modelsRaw && typeof modelsRaw === 'object'
+      ? Object.entries(modelsRaw).map(([name, info]) => ({
+          name,
+          ...(toObject(info) ?? {}),
+        }))
+      : [];
+
+  return modelEntries
+    .map((item, index) => {
+      const model = toObject(item);
+      if (!model) return null;
+
+      const rawName = String(
+        model.name ?? model.model ?? model.id ?? `model-${index}`,
+      ).trim();
+      if (!rawName) return null;
+
+      const remainingValue =
+        toNumber(model.percentage) ??
+        toNumber(model.remaining_percentage) ??
+        toNumber(model.remainingFraction) ??
+        toNumber(model.remaining_fraction);
+      if (remainingValue == null) return null;
+
+      return {
+        key: rawName,
+        label:
+          typeof model.display_name === 'string' && model.display_name.trim()
+            ? model.display_name.trim()
+            : typeof model.displayName === 'string' && model.displayName.trim()
+              ? model.displayName.trim()
+              : formatGeminiModelLabel(rawName),
+        remainingPercent:
+          remainingValue <= 1
+            ? clampPercent(remainingValue * 100)
+            : clampPercent(remainingValue),
+        resetAt: parseResetAt(model.reset_time ?? model.resetTime),
+      } satisfies GeminiQuotaDisplayItem;
+    })
+    .filter((item): item is GeminiQuotaDisplayItem => item !== null)
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
 export function getGeminiAccountDisplayEmail(account: GeminiAccount): string {
   const email = account.email?.trim();
   if (email) return email;
@@ -156,26 +303,48 @@ export function getGeminiPlanBadgeClass(
   return 'unknown';
 }
 
-export function getGeminiUsage(account: GeminiAccount): GeminiUsage {
-  const raw = toObject(account.gemini_usage_raw);
-  const bucketsRaw = raw?.buckets;
-  const buckets = Array.isArray(bucketsRaw) ? bucketsRaw : [];
+export function getGeminiQuotaDisplayItems(
+  account: GeminiAccount,
+  limit?: number,
+): GeminiQuotaDisplayItem[] {
+  const fromUsageRaw = parseGeminiQuotaDisplayItemsFromRaw(account.gemini_usage_raw);
+  if (fromUsageRaw.length > 0) {
+    return typeof limit === 'number' ? fromUsageRaw.slice(0, limit) : fromUsageRaw;
+  }
 
-  const parsedBuckets: GeminiUsageBucket[] = buckets
-    .map((item) => {
-      const bucket = toObject(item);
-      if (!bucket) return null;
-      const modelId = typeof bucket.modelId === 'string' ? bucket.modelId.trim() : '';
-      const remainingFraction = toNumber(bucket.remainingFraction);
-      if (!modelId || remainingFraction == null) return null;
-      return {
-        modelId,
-        remainingPercent: clampPercent(remainingFraction * 100),
-        resetAt: parseResetAt(bucket.resetTime),
-      };
-    })
-    .filter((item): item is GeminiUsageBucket => item !== null)
-    .sort((a, b) => a.modelId.localeCompare(b.modelId));
+  const fromQuotaRaw = parseGeminiQuotaDisplayItemsFromRaw(account.quota?.raw_data);
+  if (fromQuotaRaw.length > 0) {
+    return typeof limit === 'number' ? fromQuotaRaw.slice(0, limit) : fromQuotaRaw;
+  }
+
+  const legacyItems: GeminiQuotaDisplayItem[] = [];
+  if (typeof account.quota?.hourly_percentage === 'number') {
+    legacyItems.push({
+      key: 'hourly',
+      label: '5小时',
+      remainingPercent: clampPercent(account.quota.hourly_percentage),
+      resetAt: parseResetAt(account.quota.hourly_reset_time),
+    });
+  }
+  if (typeof account.quota?.weekly_percentage === 'number') {
+    legacyItems.push({
+      key: 'weekly',
+      label: '每周',
+      remainingPercent: clampPercent(account.quota.weekly_percentage),
+      resetAt: parseResetAt(account.quota.weekly_reset_time),
+    });
+  }
+
+  return typeof limit === 'number' ? legacyItems.slice(0, limit) : legacyItems;
+}
+
+export function getGeminiUsage(account: GeminiAccount): GeminiUsage {
+  const parsedBuckets: GeminiUsageBucket[] = getGeminiQuotaDisplayItems(account).map((item) => ({
+    modelId: item.key,
+    label: item.label,
+    remainingPercent: item.remainingPercent,
+    resetAt: item.resetAt,
+  }));
 
   const lowestRemaining = parsedBuckets.length
     ? parsedBuckets.reduce((min, item) => Math.min(min, item.remainingPercent), 100)
